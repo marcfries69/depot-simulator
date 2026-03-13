@@ -475,6 +475,42 @@ const runSimulationCore = (params, knownDuration = null) => {
       case 'boom':
         if (year <= 5) return { conservative: baseConservative + 1, aggressive: baseAggressive + 5 };
         return { conservative: baseConservative, aggressive: baseAggressive };
+      case 'dotcom2000': {
+        // Dot-Com-Crash 2000–2003, Erholung bis 2006
+        const aseq = { 1:-5, 2:-22, 3:-33, 4:38, 5:20, 6:18 };
+        const cseq = { 1:-1, 2:-2, 3:1, 4:4, 5:3, 6:3 };
+        return {
+          conservative: cseq[year] !== undefined ? cseq[year] : baseConservative,
+          aggressive:   aseq[year] !== undefined ? aseq[year] : baseAggressive,
+        };
+      }
+      case 'financial2008': {
+        // Finanzkrise 2007–2009, Erholung bis 2012
+        const aseq = { 1:7, 2:-40, 3:26, 4:20, 5:-5, 6:15 };
+        const cseq = { 1:3, 2:-5, 3:2, 4:3, 5:-1, 6:3 };
+        return {
+          conservative: cseq[year] !== undefined ? cseq[year] : baseConservative,
+          aggressive:   aseq[year] !== undefined ? aseq[year] : baseAggressive,
+        };
+      }
+      case 'covid2020': {
+        // COVID-Crash 2020, starke Erholung 2021, Ukraine/Zinsschock 2022
+        const aseq = { 1:28, 2:-18, 3:25, 4:-20, 5:20 };
+        const cseq = { 1:3,  2:-2,  3:3,  4:-10, 5:3  };
+        return {
+          conservative: cseq[year] !== undefined ? cseq[year] : baseConservative,
+          aggressive:   aseq[year] !== undefined ? aseq[year] : baseAggressive,
+        };
+      }
+      case 'stagflation1970': {
+        // Stagflation 1973–1982 (Ölkrise, hohe Inflation)
+        const aseq = { 1:-18, 2:-28, 3:35, 4:22, 5:-5, 6:4, 7:11, 8:25, 9:-8, 10:21 };
+        const cseq = { 1:-2,  2:-5,  3:3,  4:3,  5:-1, 6:1, 7:2,  8:3,  9:-1, 10:4  };
+        return {
+          conservative: cseq[year] !== undefined ? cseq[year] : baseConservative,
+          aggressive:   aseq[year] !== undefined ? aseq[year] : baseAggressive,
+        };
+      }
       default:
         return { conservative: baseConservative, aggressive: baseAggressive };
     }
@@ -573,10 +609,22 @@ const runSimulationCore = (params, knownDuration = null) => {
       finalWithdrawal = baseWithdrawal * (1 - activeCrisisReduction / 100);
     }
     
+    // Zusatzeinkommen (Rente, Mieteinnahmen etc.) – reduziert benötigte Entnahme
+    let additionalIncome = 0;
+    if (params.incomeStreams && params.incomeStreams.length > 0) {
+      params.incomeStreams.forEach(stream => {
+        if (currentYear >= stream.startYear) {
+          let annual = stream.monthlyAmount * 12;
+          if (stream.adjustForInflation) annual *= Math.pow(1 + inflation / 100, year);
+          additionalIncome += annual;
+        }
+      });
+    }
+
     // TAX CALCULATION - Correct logic
     // We need: netNeeded (after all taxes)
     // Available: totalGain (gross gains)
-    const netNeeded = finalWithdrawal;
+    const netNeeded = Math.max(0, finalWithdrawal - additionalIncome);
     
     let taxOnGains = 0;
     let taxOnPrincipal = 0;
@@ -877,6 +925,89 @@ const exportToPDF = (data, params) => {
   printWindow.print();
 };
 
+// Box-Muller normal distribution sampler
+const randn = () => {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+};
+
+// Monte-Carlo simulation (simplified, fast – no tax detail)
+const runMonteCarlo = (params, iterations = 1000) => {
+  const aggressiveSd = 18;   // ~18% Standardabweichung Aktien
+  const conservativeSd = 4;  // ~4% Standardabweichung Anleihen/Renten
+  const targetDuration = params.simulationMode === 'years' ? params.targetYears : 30;
+  const maxYears = 65;
+
+  const durations = [];
+  const yearlyValues = Array.from({ length: maxYears }, () => []);
+
+  for (let i = 0; i < iterations; i++) {
+    let cons = params.startCapital * params.conservativePercent / 100;
+    let aggr = params.startCapital * (100 - params.conservativePercent) / 100;
+    let year = 0;
+
+    while ((cons + aggr) > 0 && year < maxYears) {
+      const cReturn = params.conservativeReturn + randn() * conservativeSd;
+      const aReturn = params.aggressiveReturn + randn() * aggressiveSd;
+      cons = Math.max(0, cons * (1 + cReturn / 100));
+      aggr = Math.max(0, aggr * (1 + aReturn / 100));
+
+      // Withdrawal (simplified, proportional, inflation-adjusted)
+      let withdrawal = params.withdrawalAmount;
+      if (params.adjustForInflation) withdrawal *= Math.pow(1 + params.inflation / 100, year);
+
+      // Subtract income streams
+      if (params.incomeStreams && params.incomeStreams.length > 0) {
+        params.incomeStreams.forEach(stream => {
+          if ((year + 1) >= stream.startYear) {
+            let annual = stream.monthlyAmount * 12;
+            if (stream.adjustForInflation) annual *= Math.pow(1 + params.inflation / 100, year);
+            withdrawal = Math.max(0, withdrawal - annual);
+          }
+        });
+      }
+
+      const total = cons + aggr;
+      if (total <= withdrawal) { cons = 0; aggr = 0; break; }
+      const ratio = withdrawal / total;
+      cons -= cons * ratio;
+      aggr -= aggr * ratio;
+
+      yearlyValues[year].push(cons + aggr);
+      year++;
+    }
+    durations.push(year);
+  }
+
+  const survived = durations.filter(d => d >= targetDuration).length;
+  const sorted = [...durations].sort((a, b) => a - b);
+
+  // Build percentile paths for chart
+  const percentilePaths = [];
+  for (let y = 0; y < maxYears; y++) {
+    const vals = yearlyValues[y].sort((a, b) => a - b);
+    if (vals.length < iterations * 0.5) break; // too few runs reached this year
+    percentilePaths.push({
+      year: y + 1,
+      p10: vals[Math.floor(vals.length * 0.10)],
+      p50: vals[Math.floor(vals.length * 0.50)],
+      p90: vals[Math.floor(vals.length * 0.90)],
+    });
+  }
+
+  return {
+    successRate: (survived / iterations * 100).toFixed(1),
+    p10Duration: sorted[Math.floor(iterations * 0.10)],
+    medianDuration: sorted[Math.floor(iterations * 0.50)],
+    p90Duration: sorted[Math.floor(iterations * 0.90)],
+    percentilePaths,
+    iterations,
+    targetDuration,
+  };
+};
+
 // Main Component
 export default function DepotSimulator() {
   const [params, setParams] = useState({
@@ -919,7 +1050,8 @@ export default function DepotSimulator() {
     crisis2Returns: [-30, -10, -10],
     crisis2Reduction: 30,
     useMinimumBalance: false,
-    minimumBalance: 50000
+    minimumBalance: 50000,
+    incomeStreams: [], // [{id, label, startYear, monthlyAmount, adjustForInflation}]
   });
 
   const [showResults, setShowResults] = useState(false);
@@ -929,6 +1061,20 @@ export default function DepotSimulator() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isOptimizingTax, setIsOptimizingTax] = useState(false);
   const [isOptimizingDepot, setIsOptimizingDepot] = useState(false);
+
+  // Income stream form state
+  const [showIncomeForm, setShowIncomeForm] = useState(false);
+  const [incomeFormData, setIncomeFormData] = useState({ label: 'Rente', startYear: 3, monthlyAmount: 1800, adjustForInflation: true });
+
+  // Monte-Carlo state
+  const [monteCarloResult, setMonteCarloResult] = useState(null);
+  const [isRunningMonteCarlo, setIsRunningMonteCarlo] = useState(false);
+
+  // Scenario comparison state
+  const SCENARIO_COLORS = ['#4ecca3', '#f9a825', '#e91e63'];
+  const [savedScenarios, setSavedScenarios] = useState([]);
+  const [scenarioLabelInput, setScenarioLabelInput] = useState('');
+  const [showScenarioSaveInput, setShowScenarioSaveInput] = useState(false);
 
   const yearlyData = useMemo(() => {
     if (!showResults) return [];
@@ -1522,8 +1668,139 @@ export default function DepotSimulator() {
             </div>
           </div>
 
+          {/* Income Streams / Rente */}
+          <h3 style={{
+            fontSize: '22px',
+            marginTop: '40px',
+            marginBottom: '20px',
+            color: '#4ecca3',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <DollarSign size={24} />
+            Zusatzeinkommen & Rente
+          </h3>
+          <p style={{ color: '#a0a0a0', fontSize: '14px', marginBottom: '16px' }}>
+            Einnahmen (Rente, Miete, Dividenden) reduzieren ab dem angegebenen Jahr die benötigte Depot-Entnahme.
+          </p>
+
+          {/* Existing income stream cards */}
+          {params.incomeStreams.map(stream => (
+            <div key={stream.id} style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '12px 16px',
+              background: 'rgba(78, 204, 163, 0.1)',
+              border: '1px solid rgba(78, 204, 163, 0.3)',
+              borderRadius: '10px',
+              marginBottom: '10px',
+            }}>
+              <div>
+                <span style={{ color: '#4ecca3', fontWeight: '600', marginRight: '12px' }}>{stream.label}</span>
+                <span style={{ color: '#e0e0e0' }}>{stream.monthlyAmount.toLocaleString('de-DE')} €/Monat</span>
+                <span style={{ color: '#a0a0a0', fontSize: '13px', marginLeft: '12px' }}>ab Jahr {stream.startYear}</span>
+                {stream.adjustForInflation && <span style={{ color: '#a0a0a0', fontSize: '12px', marginLeft: '8px' }}>📈 inflationsangepasst</span>}
+              </div>
+              <button
+                onClick={() => setParams({...params, incomeStreams: params.incomeStreams.filter(s => s.id !== stream.id)})}
+                style={{ background: 'none', border: 'none', color: '#eb5757', cursor: 'pointer', fontSize: '18px', padding: '4px 8px' }}
+              >✕</button>
+            </div>
+          ))}
+
+          {/* Add income form */}
+          {showIncomeForm ? (
+            <div style={{
+              padding: '16px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: '10px',
+              marginBottom: '10px',
+            }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                <div>
+                  <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Bezeichnung</label>
+                  <input
+                    type="text"
+                    value={incomeFormData.label}
+                    onChange={e => setIncomeFormData({...incomeFormData, label: e.target.value})}
+                    style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
+                    placeholder="z.B. Rente"
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Betrag (€/Monat)</label>
+                  <input
+                    type="number"
+                    value={incomeFormData.monthlyAmount}
+                    onChange={e => setIncomeFormData({...incomeFormData, monthlyAmount: parseFloat(e.target.value) || 0})}
+                    style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Ab Simulationsjahr</label>
+                  <input
+                    type="number"
+                    value={incomeFormData.startYear}
+                    min={1}
+                    onChange={e => setIncomeFormData({...incomeFormData, startYear: parseInt(e.target.value) || 1})}
+                    style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '20px' }}>
+                  <input
+                    type="checkbox"
+                    id="incomeInflation"
+                    checked={incomeFormData.adjustForInflation}
+                    onChange={e => setIncomeFormData({...incomeFormData, adjustForInflation: e.target.checked})}
+                    style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <label htmlFor="incomeInflation" style={{ color: '#e0e0e0', fontSize: '14px', cursor: 'pointer' }}>Inflationsanpassung</label>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={() => {
+                    const newStream = { ...incomeFormData, id: Date.now() };
+                    setParams({...params, incomeStreams: [...params.incomeStreams, newStream]});
+                    setIncomeFormData({ label: 'Rente', startYear: 3, monthlyAmount: 1800, adjustForInflation: true });
+                    setShowIncomeForm(false);
+                  }}
+                  style={{ padding: '8px 20px', background: '#4ecca3', border: 'none', borderRadius: '6px', color: '#1a1a2e', fontWeight: '600', cursor: 'pointer', fontSize: '14px' }}
+                >
+                  Hinzufügen
+                </button>
+                <button
+                  onClick={() => setShowIncomeForm(false)}
+                  style={{ padding: '8px 20px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#e0e0e0', cursor: 'pointer', fontSize: '14px' }}
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowIncomeForm(true)}
+              style={{
+                padding: '10px 20px',
+                background: 'rgba(78, 204, 163, 0.15)',
+                border: '1px dashed rgba(78, 204, 163, 0.5)',
+                borderRadius: '8px',
+                color: '#4ecca3',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '600',
+                marginBottom: '10px',
+              }}
+            >
+              + Einnahme hinzufügen
+            </button>
+          )}
+
           {/* Crisis Management */}
-          <h3 style={{ 
+          <h3 style={{
             fontSize: '22px',
             marginTop: '40px',
             marginBottom: '20px',
@@ -2086,7 +2363,39 @@ export default function DepotSimulator() {
                 <option value="volatile">Volatil</option>
                 <option value="crash">Börsencrash (Jahr 3-4)</option>
                 <option value="boom">Boom Phase (5 Jahre)</option>
+                <optgroup label="── Historische Szenarien ──">
+                  <option value="dotcom2000">📉 Dot-Com-Crash (2000–2003)</option>
+                  <option value="financial2008">🏦 Finanzkrise (2007–2009)</option>
+                  <option value="covid2020">🦠 COVID-Crash (2020)</option>
+                  <option value="stagflation1970">📈 Stagflation (1973–1982)</option>
+                </optgroup>
               </select>
+              {params.scenario === 'stagflation1970' && (
+                <div style={{
+                  marginTop: '8px',
+                  padding: '10px 14px',
+                  background: 'rgba(249, 168, 37, 0.15)',
+                  border: '1px solid rgba(249, 168, 37, 0.4)',
+                  borderRadius: '8px',
+                  color: '#f9a825',
+                  fontSize: '13px',
+                }}>
+                  ⚠️ Historische Inflation 1973–1982 betrug ~7% p.a. – Inflationsrate entsprechend anpassen!
+                </div>
+              )}
+              {['dotcom2000','financial2008','covid2020','stagflation1970'].includes(params.scenario) && params.scenario !== 'stagflation1970' && (
+                <div style={{
+                  marginTop: '8px',
+                  padding: '10px 14px',
+                  background: 'rgba(78, 204, 163, 0.1)',
+                  border: '1px solid rgba(78, 204, 163, 0.3)',
+                  borderRadius: '8px',
+                  color: '#a0a0a0',
+                  fontSize: '13px',
+                }}>
+                  📊 Echte Marktdaten – nach dem historischen Zeitraum gelten Ihre Basisrenditen.
+                </div>
+              )}
             </div>
           </div>
 
@@ -2489,6 +2798,112 @@ export default function DepotSimulator() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Monte-Carlo Simulation */}
+          <div style={{
+            background: 'rgba(255,255,255,0.05)',
+            borderRadius: '16px',
+            padding: '30px',
+            marginBottom: '30px',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid rgba(150, 230, 161, 0.2)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: monteCarloResult ? '20px' : '0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '24px' }}>🎲</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '22px', color: '#96e6a1' }}>Monte-Carlo-Analyse</h3>
+                  <p style={{ margin: '4px 0 0', color: '#a0a0a0', fontSize: '13px' }}>1.000 Simulationsläufe mit zufälliger Renditestreuung</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsRunningMonteCarlo(true);
+                  setMonteCarloResult(null);
+                  setTimeout(() => {
+                    const result = runMonteCarlo(params, 1000);
+                    setMonteCarloResult(result);
+                    setIsRunningMonteCarlo(false);
+                  }, 50);
+                }}
+                disabled={isRunningMonteCarlo}
+                style={{
+                  padding: '12px 24px',
+                  background: 'linear-gradient(135deg, #96e6a1 0%, #4ecca3 100%)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  color: '#1a1a2e',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: isRunningMonteCarlo ? 'not-allowed' : 'pointer',
+                  opacity: isRunningMonteCarlo ? 0.7 : 1,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {isRunningMonteCarlo ? '⏳ Berechnung...' : '🎲 Monte-Carlo starten'}
+              </button>
+            </div>
+
+            {monteCarloResult && (() => {
+              const rate = parseFloat(monteCarloResult.successRate);
+              const color = rate >= 80 ? '#4ecca3' : rate >= 60 ? '#f9a825' : '#eb5757';
+              const label = rate >= 80 ? 'Sehr gut' : rate >= 60 ? 'Akzeptabel' : 'Kritisch';
+              return (
+                <div>
+                  {/* Success Rate + Duration */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '20px', marginBottom: '20px', alignItems: 'center' }}>
+                    <div style={{
+                      textAlign: 'center',
+                      padding: '20px 30px',
+                      background: `rgba(${color === '#4ecca3' ? '78,204,163' : color === '#f9a825' ? '249,168,37' : '235,87,87'}, 0.15)`,
+                      borderRadius: '12px',
+                      border: `2px solid ${color}`,
+                    }}>
+                      <div style={{ fontSize: '52px', fontWeight: '800', color, lineHeight: 1 }}>{monteCarloResult.successRate}%</div>
+                      <div style={{ color, fontSize: '14px', fontWeight: '600', marginTop: '6px' }}>Erfolgsquote – {label}</div>
+                      <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>
+                        Depot hält ≥{monteCarloResult.targetDuration} Jahre
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                      {[
+                        { label: 'Pessimistisch (P10)', val: monteCarloResult.p10Duration, col: '#eb5757' },
+                        { label: 'Median (P50)', val: monteCarloResult.medianDuration, col: '#4ecca3' },
+                        { label: 'Optimistisch (P90)', val: monteCarloResult.p90Duration, col: '#96e6a1' },
+                      ].map(({ label, val, col }) => (
+                        <div key={label} style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
+                          <div style={{ fontSize: '28px', fontWeight: '700', color: col }}>{val} J.</div>
+                          <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>{label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Percentile Band Chart */}
+                  <div style={{ marginTop: '10px' }}>
+                    <p style={{ color: '#a0a0a0', fontSize: '13px', marginBottom: '8px' }}>
+                      Depotverlauf – Szenarien-Spannweite (10% / 50% / 90% Perzentil)
+                    </p>
+                    <ResponsiveContainer width="100%" height={220}>
+                      <AreaChart data={monteCarloResult.percentilePaths} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+                        <XAxis dataKey="year" stroke="#a0a0a0" tick={{ fontSize: 11 }} label={{ value: 'Jahr', position: 'insideBottom', offset: -2, fill: '#a0a0a0', fontSize: 11 }} />
+                        <YAxis stroke="#a0a0a0" tick={{ fontSize: 11 }} tickFormatter={v => `${(v/1000000).toFixed(1)}M`} />
+                        <Tooltip formatter={(v) => formatCurrency(v)} labelFormatter={l => `Jahr ${l}`} contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '8px', color: '#e0e0e0' }} />
+                        <Area type="monotone" dataKey="p90" stackId="no" stroke="#96e6a1" fill="rgba(150,230,161,0.12)" strokeWidth={1.5} name="Optimistisch (P90)" dot={false} />
+                        <Area type="monotone" dataKey="p50" stackId="no" stroke="#4ecca3" fill="rgba(78,204,163,0.18)" strokeWidth={2.5} name="Median (P50)" dot={false} />
+                        <Area type="monotone" dataKey="p10" stackId="no" stroke="#eb5757" fill="rgba(235,87,87,0.12)" strokeWidth={1.5} name="Pessimistisch (P10)" dot={false} />
+                        <Legend wrapperStyle={{ fontSize: '12px' }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p style={{ color: '#666', fontSize: '11px', marginTop: '8px', fontStyle: 'italic' }}>
+                    Volatilität: Aggressiv ±18% σ, Konservativ ±4% σ | {monteCarloResult.iterations} Iterationen
+                  </p>
+                </div>
+              );
+            })()}
           </div>
 
           {/* AI Optimization */}
@@ -3059,6 +3474,151 @@ export default function DepotSimulator() {
                 <Bar dataKey="fromPrincipal" stackId="a" fill="#eb5757" name="Aus Substanz" />
               </BarChart>
             </ResponsiveContainer>
+          </div>
+
+          {/* Scenario Comparison */}
+          <div style={{
+            background: 'rgba(255,255,255,0.05)',
+            borderRadius: '16px',
+            padding: '30px',
+            marginBottom: '30px',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid rgba(249,168,37,0.2)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: savedScenarios.length > 0 ? '20px' : '0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Layers size={24} color="#f9a825" />
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '22px', color: '#f9a825' }}>Szenario-Vergleich</h3>
+                  <p style={{ margin: '4px 0 0', color: '#a0a0a0', fontSize: '13px' }}>
+                    {savedScenarios.length === 0
+                      ? 'Speichere bis zu 3 Simulationen zum direkten Vergleich'
+                      : `${savedScenarios.length} Szenario${savedScenarios.length > 1 ? 's' : ''} gespeichert`}
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                {savedScenarios.length > 0 && (
+                  <button
+                    onClick={() => { setSavedScenarios([]); setShowScenarioSaveInput(false); }}
+                    style={{ padding: '8px 14px', background: 'rgba(235,87,87,0.15)', border: '1px solid rgba(235,87,87,0.4)', borderRadius: '8px', color: '#eb5757', cursor: 'pointer', fontSize: '13px' }}
+                  >
+                    Alle löschen
+                  </button>
+                )}
+                {!showScenarioSaveInput ? (
+                  <button
+                    onClick={() => { setScenarioLabelInput(`Szenario ${savedScenarios.length + 1}`); setShowScenarioSaveInput(true); }}
+                    disabled={savedScenarios.length >= 3}
+                    style={{
+                      padding: '10px 18px',
+                      background: savedScenarios.length >= 3 ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, #f9a825 0%, #e67e00 100%)',
+                      border: 'none',
+                      borderRadius: '8px',
+                      color: savedScenarios.length >= 3 ? '#666' : '#1a1a2e',
+                      fontWeight: '600',
+                      cursor: savedScenarios.length >= 3 ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    💾 Szenario speichern
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      autoFocus
+                      value={scenarioLabelInput}
+                      onChange={e => setScenarioLabelInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          const label = scenarioLabelInput.trim() || `Szenario ${savedScenarios.length + 1}`;
+                          setSavedScenarios(prev => [...prev, {
+                            id: Date.now(), label,
+                            yearlyData: [...yearlyData],
+                            summary: { ...summary },
+                            color: SCENARIO_COLORS[prev.length % SCENARIO_COLORS.length],
+                          }]);
+                          setShowScenarioSaveInput(false);
+                        }
+                        if (e.key === 'Escape') setShowScenarioSaveInput(false);
+                      }}
+                      placeholder="Name eingeben…"
+                      style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(249,168,37,0.5)', borderRadius: '6px', color: '#fff', fontSize: '14px', width: '160px' }}
+                    />
+                    <button
+                      onClick={() => {
+                        const label = scenarioLabelInput.trim() || `Szenario ${savedScenarios.length + 1}`;
+                        setSavedScenarios(prev => [...prev, {
+                          id: Date.now(), label,
+                          yearlyData: [...yearlyData],
+                          summary: { ...summary },
+                          color: SCENARIO_COLORS[prev.length % SCENARIO_COLORS.length],
+                        }]);
+                        setShowScenarioSaveInput(false);
+                      }}
+                      style={{ padding: '8px 14px', background: '#f9a825', border: 'none', borderRadius: '6px', color: '#1a1a2e', fontWeight: '700', cursor: 'pointer' }}
+                    >✓</button>
+                    <button onClick={() => setShowScenarioSaveInput(false)} style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: '6px', color: '#e0e0e0', cursor: 'pointer' }}>✕</button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {savedScenarios.length >= 1 && (
+              <div>
+                {/* Comparison summary table */}
+                <div style={{ overflowX: 'auto', marginBottom: '20px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid rgba(249,168,37,0.3)' }}>
+                        {['Szenario', 'Laufzeit', 'Endwert', 'Gesamtentnahmen', 'Steuern'].map(h => (
+                          <th key={h} style={{ padding: '10px 12px', textAlign: h === 'Szenario' ? 'left' : 'right', color: '#f9a825', fontWeight: '600' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {savedScenarios.map(sc => (
+                        <tr key={sc.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                          <td style={{ padding: '10px 12px', color: sc.color, fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ width: '12px', height: '12px', borderRadius: '50%', background: sc.color, display: 'inline-block', flexShrink: 0 }} />
+                            {sc.label}
+                          </td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e0e0e0' }}>{sc.summary.duration} Jahre</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e0e0e0' }}>{formatCurrency(sc.summary.finalValue)}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e0e0e0' }}>{formatCurrency(sc.summary.totalWithdrawn)}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', color: '#eb5757' }}>{formatCurrency(sc.summary.totalTaxes)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Comparison LineChart */}
+                <p style={{ color: '#a0a0a0', fontSize: '13px', marginBottom: '8px' }}>Depotverlauf Vergleich – Gesamtvermögen pro Jahr</p>
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+                    <XAxis dataKey="year" type="number" domain={[1, Math.max(...savedScenarios.map(s => s.yearlyData.length))]} stroke="#a0a0a0" tick={{ fontSize: 11 }} label={{ value: 'Jahr', position: 'insideBottom', offset: -2, fill: '#a0a0a0', fontSize: 11 }} />
+                    <YAxis stroke="#a0a0a0" tick={{ fontSize: 11 }} tickFormatter={v => `${(v/1000000).toFixed(1)}M`} />
+                    <Tooltip formatter={(v) => formatCurrency(v)} labelFormatter={l => `Jahr ${l}`} contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '8px', color: '#e0e0e0' }} />
+                    <Legend wrapperStyle={{ fontSize: '13px' }} />
+                    {savedScenarios.map(sc => (
+                      <Line
+                        key={sc.id}
+                        data={sc.yearlyData}
+                        dataKey="totalDepot"
+                        name={`${sc.label} (${sc.summary.duration}J)`}
+                        stroke={sc.color}
+                        strokeWidth={2.5}
+                        dot={false}
+                        type="monotone"
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
 
           {/* Detailed Table */}
