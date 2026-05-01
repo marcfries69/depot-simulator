@@ -450,6 +450,10 @@ const runSimulationCore = (params, knownDuration = null) => {
     boom2Years,
     boom2Returns,
     boom2Increase,
+    // PKV
+    usePKV,
+    pkvMonthlyAmount,
+    pkvIncreaseRate,
   } = params;
 
   let conservativeDepot = startCapital * (conservativePercent / 100);
@@ -686,10 +690,15 @@ const runSimulationCore = (params, knownDuration = null) => {
       });
     }
 
+    // PKV: Beitrag steigt jährlich mit pkvIncreaseRate
+    const pkvAnnual = (usePKV && pkvMonthlyAmount > 0)
+      ? pkvMonthlyAmount * 12 * Math.pow(1 + (pkvIncreaseRate || 4) / 100, year)
+      : 0;
+
     // TAX CALCULATION - Correct logic
-    // We need: netNeeded (after all taxes)
+    // We need: netNeeded (after all taxes) + PKV
     // Available: totalGain (gross gains)
-    const netNeeded = Math.max(0, finalWithdrawal - additionalIncome);
+    const netNeeded = Math.max(0, finalWithdrawal + pkvAnnual - additionalIncome);
     
     let taxOnGains = 0;
     let taxOnPrincipal = 0;
@@ -866,6 +875,8 @@ const runSimulationCore = (params, knownDuration = null) => {
       isInBoom,
       isInBoom1: inBoom1,
       isInBoom2: inBoom2,
+      pkvAnnual,
+      pkvMonthly: pkvAnnual / 12,
       limitedByMinBalance: actualWithdrawal < grossWithdrawal,
       rebalanceAmount: rebalanceAmount
     });
@@ -1037,6 +1048,11 @@ const runMonteCarlo = (params, iterations = 1000) => {
         });
       }
 
+      // PKV Kosten addieren
+      if (params.usePKV && params.pkvMonthlyAmount > 0) {
+        withdrawal += params.pkvMonthlyAmount * 12 * Math.pow(1 + (params.pkvIncreaseRate || 4) / 100, year);
+      }
+
       const total = cons + aggr;
       if (total <= withdrawal) { cons = 0; aggr = 0; break; }
       const ratio = withdrawal / total;
@@ -1133,6 +1149,10 @@ export default function DepotSimulator() {
     simulationMode: 'withdrawal', // 'years' or 'withdrawal'
     targetYears: 30,
     endAge: null, // wenn gesetzt: Ziellaufzeit = endAge - startAge
+    // PKV
+    usePKV: false,
+    pkvMonthlyAmount: 400,
+    pkvIncreaseRate: 4,
     // Crisis management - auto OR manual (LEGACY - keep for compatibility)
     crisisMode: 'auto', // 'auto' or 'manual'
     manualCrisisCount: 5,
@@ -1893,12 +1913,12 @@ export default function DepotSimulator() {
               borderRadius: '12px',
               display: 'flex',
               alignItems: 'center',
-              gap: '24px',
+              gap: '32px',
               flexWrap: 'wrap',
             }}>
               <div>
                 <div style={{ color: '#4ecca3', fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>
-                  Maximale monatliche Entnahme
+                  {params.usePKV ? 'Lebenshaltung (ohne PKV)' : 'Maximale monatliche Entnahme'}
                 </div>
                 <div style={{ fontSize: '32px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
                   {formatCurrency(optimalWithdrawal / 12)}
@@ -1908,8 +1928,100 @@ export default function DepotSimulator() {
                   {formatCurrency(optimalWithdrawal)}/Jahr · Alter {params.startAge} → {params.endAge}
                 </div>
               </div>
+              {params.usePKV && params.pkvMonthlyAmount > 0 && (
+                <div style={{ borderLeft: '1px solid rgba(78,204,163,0.3)', paddingLeft: '32px' }}>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginBottom: '8px' }}>PKV (Jahr 1)</div>
+                  <div style={{ color: '#eb5757', fontWeight: '700', fontSize: '18px' }}>
+                    − {formatCurrency(params.pkvMonthlyAmount)}/Monat
+                  </div>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>= {formatCurrency(optimalWithdrawal / 12 - params.pkvMonthlyAmount)}/Monat netto</div>
+                </div>
+              )}
             </div>
           )}
+
+          {/* PKV */}
+          <h3 style={{
+            fontSize: '22px',
+            marginTop: '40px',
+            marginBottom: '16px',
+            color: '#4ecca3',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <Percent size={24} />
+            Private Krankenversicherung (PKV)
+          </h3>
+
+          <div style={{
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: '12px',
+            padding: '20px',
+            marginBottom: '10px',
+          }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={params.usePKV}
+                onChange={e => setParams({...params, usePKV: e.target.checked})}
+                style={{ width: '20px', height: '20px', cursor: 'pointer' }}
+              />
+              <span style={{ color: '#e0e0e0', fontSize: '15px', fontWeight: '500' }}>PKV-Beitrag einberechnen</span>
+            </label>
+
+            {params.usePKV && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                  <div>
+                    <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '6px' }}>
+                      Monatsbeitrag heute (€)
+                    </label>
+                    <input
+                      type="number"
+                      value={params.pkvMonthlyAmount}
+                      min={0}
+                      onChange={e => setParams({...params, pkvMonthlyAmount: parseFloat(e.target.value) || 0})}
+                      style={{ width: '100%', padding: '10px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '15px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '6px' }}>
+                      Jährliche Steigerung (%)
+                    </label>
+                    <input
+                      type="number"
+                      value={params.pkvIncreaseRate}
+                      min={0} max={15} step={0.5}
+                      onChange={e => setParams({...params, pkvIncreaseRate: parseFloat(e.target.value) || 0})}
+                      style={{ width: '100%', padding: '10px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '15px', boxSizing: 'border-box' }}
+                    />
+                    <small style={{ color: '#666', fontSize: '11px', display: 'block', marginTop: '4px' }}>Historisch: 3–5% p.a.</small>
+                  </div>
+                </div>
+
+                {/* PKV-Vorschau: Jahr 1, Jahr 10, letztes Jahr */}
+                {(() => {
+                  const targetYrs = endAgeActive ? derivedTargetYears : (params.simulationMode === 'years' ? params.targetYears : 30);
+                  const pkv1   = params.pkvMonthlyAmount;
+                  const pkv10  = pkv1 * Math.pow(1 + params.pkvIncreaseRate / 100, 9);
+                  const pkvEnd = pkv1 * Math.pow(1 + params.pkvIncreaseRate / 100, targetYrs - 1);
+                  return (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                      {[['Jahr 1', pkv1], ['Jahr 10', pkv10], [`Jahr ${targetYrs}`, pkvEnd]].map(([label, val]) => (
+                        <div key={label} style={{ background: 'rgba(235,87,87,0.08)', border: '1px solid rgba(235,87,87,0.2)', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
+                          <div style={{ color: '#a0a0a0', fontSize: '11px', marginBottom: '4px' }}>{label}</div>
+                          <div style={{ color: '#eb5757', fontWeight: '700', fontSize: '16px' }}>{Math.round(val).toLocaleString('de-DE')} €<span style={{ fontSize: '11px', fontWeight: '400' }}>/Monat</span></div>
+                          <div style={{ color: '#888', fontSize: '11px', marginTop: '2px' }}>{Math.round(val * 12).toLocaleString('de-DE')} €/Jahr</div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+          </div>
 
           {/* Income Streams / Rente */}
           <h3 style={{
@@ -3118,16 +3230,48 @@ export default function DepotSimulator() {
             }}>
               <div>
                 <div style={{ color: '#4ecca3', fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>
-                  Maximale monatliche Entnahme
+                  {params.usePKV ? 'Lebenshaltung (ohne PKV)' : 'Maximale monatliche Entnahme'}
                 </div>
                 <div style={{ fontSize: '42px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
                   {formatCurrency(optimalWithdrawal / 12)}
                   <span style={{ fontSize: '18px', fontWeight: '400', color: '#a0a0a0', marginLeft: '8px' }}>/Monat</span>
                 </div>
                 <div style={{ color: '#a0a0a0', fontSize: '13px', marginTop: '6px' }}>
-                  {formatCurrency(optimalWithdrawal)}/Jahr · Depot läuft in {params.targetYears} Jahren auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} aus
+                  {formatCurrency(optimalWithdrawal)}/Jahr · Depot läuft in {derivedTargetYears} Jahren auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} aus
                 </div>
               </div>
+
+              {/* PKV-Spalte */}
+              {params.usePKV && params.pkvMonthlyAmount > 0 && (
+                <div style={{ borderLeft: '1px solid rgba(235,87,87,0.3)', paddingLeft: '32px' }}>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginBottom: '4px' }}>PKV-Abzug</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <div>
+                      <div style={{ color: '#888', fontSize: '11px', marginBottom: '2px' }}>Jahr 1</div>
+                      <div style={{ color: '#eb5757', fontWeight: '700', fontSize: '18px' }}>
+                        − {formatCurrency(params.pkvMonthlyAmount)}<span style={{ fontSize: '12px', fontWeight: '400', color: '#a0a0a0' }}>/Monat</span>
+                      </div>
+                      <div style={{ color: '#888', fontSize: '12px' }}>
+                        − {formatCurrency(params.pkvMonthlyAmount * 12)}/Jahr
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888', fontSize: '11px', marginBottom: '2px' }}>Jahr {derivedTargetYears}</div>
+                      <div style={{ color: '#eb5757', fontWeight: '700', fontSize: '18px' }}>
+                        − {formatCurrency(params.pkvMonthlyAmount * Math.pow(1 + params.pkvIncreaseRate / 100, derivedTargetYears - 1))}<span style={{ fontSize: '12px', fontWeight: '400', color: '#a0a0a0' }}>/Monat</span>
+                      </div>
+                      <div style={{ color: '#888', fontSize: '12px' }}>
+                        − {formatCurrency(params.pkvMonthlyAmount * 12 * Math.pow(1 + params.pkvIncreaseRate / 100, derivedTargetYears - 1))}/Jahr
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '8px' }}>
+                    Netto verfügbar (Jahr 1): <strong style={{ color: '#e0e0e0' }}>{formatCurrency(optimalWithdrawal / 12 - params.pkvMonthlyAmount)}/Monat</strong>
+                  </div>
+                </div>
+              )}
+
+              {/* Zusatzeinkommen-Spalte */}
               {params.incomeStreams.length > 0 && (
                 <div style={{ borderLeft: '1px solid rgba(78,204,163,0.3)', paddingLeft: '32px' }}>
                   <div style={{ color: '#a0a0a0', fontSize: '12px', marginBottom: '4px' }}>Davon aus Depot (Ø)</div>
