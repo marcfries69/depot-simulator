@@ -1132,6 +1132,7 @@ export default function DepotSimulator() {
     agePattern85plus: 70,
     simulationMode: 'withdrawal', // 'years' or 'withdrawal'
     targetYears: 30,
+    endAge: null, // wenn gesetzt: Ziellaufzeit = endAge - startAge
     // Crisis management - auto OR manual (LEGACY - keep for compatibility)
     crisisMode: 'auto', // 'auto' or 'manual'
     manualCrisisCount: 5,
@@ -1195,18 +1196,26 @@ export default function DepotSimulator() {
   const [scenarioLabelInput, setScenarioLabelInput] = useState('');
   const [showScenarioSaveInput, setShowScenarioSaveInput] = useState(false);
 
-  // In Ziellaufzeit-Modus: optimale Entnahme berechnen (Binärsuche)
+  // Endalter: leitet Ziellaufzeit und Modus automatisch ab
+  const endAgeActive = params.endAge && Number(params.endAge) > params.startAge;
+  const derivedTargetYears = endAgeActive
+    ? Number(params.endAge) - params.startAge
+    : params.targetYears;
+  const derivedSimMode = endAgeActive ? 'years' : params.simulationMode;
+
+  // Optimale Entnahme per Binärsuche (wenn Ziellaufzeit aktiv)
   const optimalWithdrawal = useMemo(() => {
-    if (params.simulationMode !== 'years') return null;
-    return calcOptimalWithdrawal(params);
-  }, [params]);
+    if (derivedSimMode !== 'years') return null;
+    return calcOptimalWithdrawal({ ...params, simulationMode: 'years', targetYears: derivedTargetYears });
+  }, [params]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const effectiveParams = useMemo(() => {
-    if (params.simulationMode === 'years' && optimalWithdrawal !== null) {
-      return { ...params, withdrawalAmount: optimalWithdrawal };
+    const base = { ...params, simulationMode: derivedSimMode, targetYears: derivedTargetYears };
+    if (derivedSimMode === 'years' && optimalWithdrawal !== null) {
+      return { ...base, withdrawalAmount: optimalWithdrawal };
     }
-    return params;
-  }, [params, optimalWithdrawal]);
+    return base;
+  }, [params, optimalWithdrawal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const yearlyData = useMemo(() => {
     if (!showResults) return [];
@@ -1369,64 +1378,107 @@ export default function DepotSimulator() {
               />
             </div>
 
-            <div>
-              <label style={{ 
-                display: 'block',
-                marginBottom: '8px',
-                color: '#c0c0c0',
-                fontSize: '14px',
-                fontWeight: '500'
-              }}>
-                <Calendar size={16} style={{ verticalAlign: 'middle', marginRight: '5px' }} />
-                Startalter
-              </label>
-              <input
-                type="number"
-                value={params.startAge}
-                onChange={(e) => setParams({...params, startAge: parseInt(e.target.value) || 60})}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  background: 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.2)',
-                  borderRadius: '8px',
-                  color: '#fff',
-                  fontSize: '16px'
-                }}
-              />
-            </div>
-
-            <div>
-              <label style={{ 
-                display: 'block',
-                marginBottom: '8px',
-                color: '#c0c0c0',
-                fontSize: '14px',
-                fontWeight: '500'
-              }}>
-                Simulationsmodus
-              </label>
-              <select
-                value={params.simulationMode}
-                onChange={(e) => setParams({...params, simulationMode: e.target.value})}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  background: 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.2)',
-                  borderRadius: '8px',
-                  color: '#fff',
-                  fontSize: '16px'
-                }}
-              >
-                <option value="withdrawal">Bis Depot auf Null</option>
-                <option value="years">Feste Laufzeit</option>
-              </select>
-            </div>
-
-            {params.simulationMode === 'years' && (
+            {/* Startalter + Endalter nebeneinander */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
               <div>
-                <label style={{ 
+                <label style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  color: '#c0c0c0',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}>
+                  <Calendar size={16} style={{ verticalAlign: 'middle', marginRight: '5px' }} />
+                  Startalter
+                </label>
+                <input
+                  type="number"
+                  value={params.startAge}
+                  onChange={(e) => setParams({...params, startAge: parseInt(e.target.value) || 60})}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid rgba(255,255,255,0.2)',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    fontSize: '16px',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  color: endAgeActive ? '#4ecca3' : '#c0c0c0',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}>
+                  <Calendar size={16} style={{ verticalAlign: 'middle', marginRight: '5px' }} />
+                  Endalter <span style={{ color: '#666', fontWeight: '400' }}>(optional)</span>
+                </label>
+                <input
+                  type="number"
+                  value={params.endAge ?? ''}
+                  placeholder="z.B. 90"
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? null : parseInt(e.target.value) || null;
+                    setParams({...params, endAge: val});
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    background: endAgeActive ? 'rgba(78, 204, 163, 0.1)' : 'rgba(255,255,255,0.1)',
+                    border: endAgeActive ? '2px solid #4ecca3' : '1px solid rgba(255,255,255,0.2)',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    fontSize: '16px',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                {endAgeActive && (
+                  <small style={{ color: '#4ecca3', display: 'block', marginTop: '5px', fontWeight: '600' }}>
+                    = {derivedTargetYears} Jahre Laufzeit
+                  </small>
+                )}
+              </div>
+            </div>
+
+            {/* Simulationsmodus — nur wenn kein Endalter gesetzt */}
+            {!endAgeActive && (
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  color: '#c0c0c0',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}>
+                  Simulationsmodus
+                </label>
+                <select
+                  value={params.simulationMode}
+                  onChange={(e) => setParams({...params, simulationMode: e.target.value})}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid rgba(255,255,255,0.2)',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    fontSize: '16px'
+                  }}
+                >
+                  <option value="withdrawal">Bis Depot auf Null</option>
+                  <option value="years">Feste Laufzeit</option>
+                </select>
+              </div>
+            )}
+
+            {!endAgeActive && params.simulationMode === 'years' && (
+              <div>
+                <label style={{
                   display: 'block',
                   marginBottom: '8px',
                   color: '#c0c0c0',
@@ -1581,8 +1633,9 @@ export default function DepotSimulator() {
             </div>
           </div>
 
-          {/* Withdrawal Parameters */}
-          <h3 style={{ 
+          {/* Withdrawal Parameters — entfällt wenn Endalter gesetzt */}
+          {!endAgeActive && (<>
+          <h3 style={{
             fontSize: '22px',
             marginTop: '40px',
             marginBottom: '20px',
@@ -1591,8 +1644,8 @@ export default function DepotSimulator() {
             Entnahme-Parameter
           </h3>
 
-          <div style={{ 
-            display: 'grid', 
+          <div style={{
+            display: 'grid',
             gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
             gap: '20px'
           }}>
@@ -1828,6 +1881,35 @@ export default function DepotSimulator() {
               )}
             </div>
           </div>
+          </>)}
+
+          {/* Berechnete Entnahme wenn Endalter aktiv */}
+          {endAgeActive && optimalWithdrawal !== null && (
+            <div style={{
+              marginTop: '32px',
+              padding: '20px 24px',
+              background: 'rgba(78, 204, 163, 0.1)',
+              border: '2px solid rgba(78, 204, 163, 0.4)',
+              borderRadius: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '24px',
+              flexWrap: 'wrap',
+            }}>
+              <div>
+                <div style={{ color: '#4ecca3', fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>
+                  Maximale monatliche Entnahme
+                </div>
+                <div style={{ fontSize: '32px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
+                  {formatCurrency(optimalWithdrawal / 12)}
+                  <span style={{ fontSize: '14px', fontWeight: '400', color: '#a0a0a0', marginLeft: '6px' }}>/Monat</span>
+                </div>
+                <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>
+                  {formatCurrency(optimalWithdrawal)}/Jahr · Alter {params.startAge} → {params.endAge}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Income Streams / Rente */}
           <h3 style={{
