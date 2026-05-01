@@ -6,6 +6,29 @@ import { Download, TrendingUp, TrendingDown, DollarSign, Calendar, Percent, Aler
 const formatCurrency = (value) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(value);
 const formatPercent = (value) => `${value.toFixed(2)}%`;
 
+// Income stream: Brutto → Netto Berechnung
+// Gesetzliche Rente: nur Besteuerungsanteil wird mit Einkommensteuer belastet
+// bAV: voll steuerpflichtig + voller GKV/PV-Beitrag (abzgl. Freibetrag ~177 €/Monat)
+const BAV_KV_FREIBETRAG = 177.75; // monatlicher GKV-Freibetrag auf Versorgungsbezüge
+const KV_PV_SATZ = 0.196;         // 14.6% KV + ~1.6% Zusatz + 3.4% PV (kinderlos)
+
+const calcStreamNetMonthly = (stream) => {
+  const type = stream.type || 'sonstige';
+  if (type === 'sonstige') return stream.monthlyAmount; // bereits Netto
+  const brutto = stream.monthlyAmount;
+  const taxRate = (stream.incomeTaxRate ?? 25) / 100;
+  if (type === 'gesetzliche_rente') {
+    const besteuerungsanteil = (stream.besteuerungsanteil ?? 83) / 100;
+    return Math.max(0, brutto - brutto * besteuerungsanteil * taxRate);
+  }
+  if (type === 'bav') {
+    const steuer = brutto * taxRate;
+    const kvBase = stream.isGKV !== false ? Math.max(0, brutto - BAV_KV_FREIBETRAG) * KV_PV_SATZ : 0;
+    return Math.max(0, brutto - steuer - kvBase);
+  }
+  return stream.monthlyAmount;
+};
+
 // AI Optimization function using Netlify proxy
 const optimizeWithAI = async (params, yearlyData) => {
   try {
@@ -415,7 +438,18 @@ const runSimulationCore = (params, knownDuration = null) => {
     crisis2StartYear,
     crisis2Years,
     crisis2Returns,
-    crisis2Reduction
+    crisis2Reduction,
+    // Boom phases
+    useBoom1,
+    boom1StartYear,
+    boom1Years,
+    boom1Returns,
+    boom1Increase,
+    useBoom2,
+    boom2StartYear,
+    boom2Years,
+    boom2Returns,
+    boom2Increase,
   } = params;
 
   let conservativeDepot = startCapital * (conservativePercent / 100);
@@ -566,15 +600,43 @@ const runSimulationCore = (params, knownDuration = null) => {
       }
     }
     
-    // Apply gains with crisis-adjusted returns
+    // Check Boom phases (only apply if not already overridden by a crisis)
+    let inBoom1 = false;
+    let inBoom2 = false;
+    let activeWithdrawalIncrease = 0;
+
+    if (!inCrisis1 && !inCrisis2) {
+      if (useBoom1 && boom1StartYear && boom1Years > 0 && boom1Returns && boom1Returns.length > 0) {
+        if (currentYear >= boom1StartYear && currentYear < boom1StartYear + boom1Years) {
+          inBoom1 = true;
+          const idx = currentYear - boom1StartYear;
+          effectiveAggressiveReturn = boom1Returns[idx];
+          activeWithdrawalIncrease = boom1Increase || 0;
+        }
+      }
+      if (useBoom2 && boom2StartYear && boom2Years > 0 && boom2Returns && boom2Returns.length > 0) {
+        if (currentYear >= boom2StartYear && currentYear < boom2StartYear + boom2Years) {
+          inBoom2 = true;
+          const idx = currentYear - boom2StartYear;
+          // Both booms active: take better return
+          effectiveAggressiveReturn = inBoom1
+            ? Math.max(effectiveAggressiveReturn, boom2Returns[idx])
+            : boom2Returns[idx];
+          activeWithdrawalIncrease = Math.max(activeWithdrawalIncrease, boom2Increase || 0);
+        }
+      }
+    }
+    const isInBoom = inBoom1 || inBoom2;
+
+    // Apply gains with crisis/boom-adjusted returns
     const conservativeGain = conservativeDepot * (returns.conservative / 100);
     const aggressiveGain = aggressiveDepot * (effectiveAggressiveReturn / 100);
-    
+
     conservativeDepot += conservativeGain;
     aggressiveDepot += aggressiveGain;
-    
+
     const totalGain = conservativeGain + aggressiveGain;
-    
+
     // Determine if in any crisis (only use new crisis system)
     const isInNewCrisis = inCrisis1 || inCrisis2;
     let isInCrisis = isInNewCrisis;
@@ -603,18 +665,21 @@ const runSimulationCore = (params, knownDuration = null) => {
       baseWithdrawal = getAgeAdjustedWithdrawal(year, startAge, baseWithdrawal, agePatterns);
     }
     
-    // Apply crisis reduction if in crisis
+    // Apply crisis reduction or boom increase to withdrawal
     let finalWithdrawal = baseWithdrawal;
     if (isInCrisis && activeCrisisReduction > 0) {
       finalWithdrawal = baseWithdrawal * (1 - activeCrisisReduction / 100);
+    } else if (isInBoom && activeWithdrawalIncrease > 0) {
+      finalWithdrawal = baseWithdrawal * (1 + activeWithdrawalIncrease / 100);
     }
     
     // Zusatzeinkommen (Rente, Mieteinnahmen etc.) – reduziert benötigte Entnahme
+    // Nettobetrag wird verwendet (Brutto-Typen werden via calcStreamNetMonthly umgerechnet)
     let additionalIncome = 0;
     if (params.incomeStreams && params.incomeStreams.length > 0) {
       params.incomeStreams.forEach(stream => {
         if (currentYear >= stream.startYear) {
-          let annual = stream.monthlyAmount * 12;
+          let annual = calcStreamNetMonthly(stream) * 12;
           if (stream.adjustForInflation) annual *= Math.pow(1 + inflation / 100, year);
           additionalIncome += annual;
         }
@@ -798,6 +863,9 @@ const runSimulationCore = (params, knownDuration = null) => {
       isInCrisis2: inCrisis2,
       crisis1YearIndex: crisis1YearIndex,
       crisis2YearIndex: crisis2YearIndex,
+      isInBoom,
+      isInBoom1: inBoom1,
+      isInBoom2: inBoom2,
       limitedByMinBalance: actualWithdrawal < grossWithdrawal,
       rebalanceAmount: rebalanceAmount
     });
@@ -958,11 +1026,11 @@ const runMonteCarlo = (params, iterations = 1000) => {
       let withdrawal = params.withdrawalAmount;
       if (params.adjustForInflation) withdrawal *= Math.pow(1 + params.inflation / 100, year);
 
-      // Subtract income streams
+      // Subtract income streams (net amounts)
       if (params.incomeStreams && params.incomeStreams.length > 0) {
         params.incomeStreams.forEach(stream => {
           if ((year + 1) >= stream.startYear) {
-            let annual = stream.monthlyAmount * 12;
+            let annual = calcStreamNetMonthly(stream) * 12;
             if (stream.adjustForInflation) annual *= Math.pow(1 + params.inflation / 100, year);
             withdrawal = Math.max(0, withdrawal - annual);
           }
@@ -1006,6 +1074,37 @@ const runMonteCarlo = (params, iterations = 1000) => {
     iterations,
     targetDuration,
   };
+};
+
+// Binary search: find the annual withdrawal that depletes the depot to exactly 0
+// (or minimumBalance if enabled) after exactly targetYears years.
+const calcOptimalWithdrawal = (params) => {
+  const { startCapital, targetYears, useMinimumBalance, minimumBalance } = params;
+  if (!startCapital || !targetYears || targetYears < 1) return 0;
+
+  const floor = useMinimumBalance ? (minimumBalance || 0) : 0;
+  const testParams = { ...params, simulationMode: 'years' };
+
+  let lo = 0;
+  let hi = startCapital; // upper bound: entire capital in one year → always ends early
+
+  for (let i = 0; i < 50; i++) {
+    const mid = (lo + hi) / 2;
+    const result = runSimulationCore({ ...testParams, withdrawalAmount: mid });
+    const lastValue = result.length > 0 ? result[result.length - 1].totalDepot : 0;
+
+    if (result.length < targetYears) {
+      // Depot hit floor before target → withdrawal too high
+      hi = mid;
+    } else if (lastValue > floor + 50) {
+      // Money left at end → withdrawal too low
+      lo = mid;
+    } else {
+      break; // within €50 of target → good enough
+    }
+  }
+
+  return (lo + hi) / 2;
 };
 
 // Main Component
@@ -1052,6 +1151,17 @@ export default function DepotSimulator() {
     useMinimumBalance: false,
     minimumBalance: 50000,
     incomeStreams: [], // [{id, label, startYear, monthlyAmount, adjustForInflation}]
+    // Boom phases
+    useBoom1: false,
+    boom1StartYear: 5,
+    boom1Years: 3,
+    boom1Returns: [15, 20, 15],
+    boom1Increase: 0,
+    useBoom2: false,
+    boom2StartYear: 20,
+    boom2Years: 2,
+    boom2Returns: [18, 12],
+    boom2Increase: 0,
   });
 
   const [showResults, setShowResults] = useState(false);
@@ -1064,7 +1174,16 @@ export default function DepotSimulator() {
 
   // Income stream form state
   const [showIncomeForm, setShowIncomeForm] = useState(false);
-  const [incomeFormData, setIncomeFormData] = useState({ label: 'Rente', startYear: 3, monthlyAmount: 1800, adjustForInflation: true });
+  const [incomeFormData, setIncomeFormData] = useState({
+    type: 'gesetzliche_rente',
+    label: 'Gesetzliche Rente',
+    startYear: 3,
+    monthlyAmount: 2000,
+    adjustForInflation: true,
+    incomeTaxRate: 25,
+    besteuerungsanteil: 83,
+    isGKV: true,
+  });
 
   // Monte-Carlo state
   const [monteCarloResult, setMonteCarloResult] = useState(null);
@@ -1076,10 +1195,23 @@ export default function DepotSimulator() {
   const [scenarioLabelInput, setScenarioLabelInput] = useState('');
   const [showScenarioSaveInput, setShowScenarioSaveInput] = useState(false);
 
+  // In Ziellaufzeit-Modus: optimale Entnahme berechnen (Binärsuche)
+  const optimalWithdrawal = useMemo(() => {
+    if (params.simulationMode !== 'years') return null;
+    return calcOptimalWithdrawal(params);
+  }, [params]);
+
+  const effectiveParams = useMemo(() => {
+    if (params.simulationMode === 'years' && optimalWithdrawal !== null) {
+      return { ...params, withdrawalAmount: optimalWithdrawal };
+    }
+    return params;
+  }, [params, optimalWithdrawal]);
+
   const yearlyData = useMemo(() => {
     if (!showResults) return [];
-    return runSimulation(params);
-  }, [params, showResults]);
+    return runSimulation(effectiveParams);
+  }, [effectiveParams, showResults]);
 
   const handleOptimize = async () => {
     setIsOptimizing(true);
@@ -1465,34 +1597,63 @@ export default function DepotSimulator() {
             gap: '20px'
           }}>
             <div>
-              <label style={{ 
-                display: 'block',
-                marginBottom: '8px',
-                color: '#c0c0c0',
-                fontSize: '14px',
-                fontWeight: '500'
-              }}>
-                <DollarSign size={16} style={{ verticalAlign: 'middle', marginRight: '5px' }} />
-                Basis Netto-Entnahme pro Jahr (€)
-              </label>
-              <input
-                type="number"
-                value={params.withdrawalAmount}
-                onChange={(e) => setParams({...params, withdrawalAmount: parseFloat(e.target.value)})}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  background: 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.2)',
+              {params.simulationMode === 'years' ? (
+                // Ziellaufzeit-Modus: Entnahme wird automatisch berechnet
+                <div style={{
+                  padding: '16px',
+                  background: 'rgba(78, 204, 163, 0.1)',
+                  border: '2px solid rgba(78, 204, 163, 0.4)',
                   borderRadius: '8px',
-                  color: '#fff',
-                  fontSize: '16px'
-                }}
-              />
-              {params.useAgePattern && (
-                <small style={{ color: '#ffc107', display: 'block', marginTop: '5px', fontWeight: '500' }}>
-                  ⚠️ Wird durch Altersprofil angepasst (z.B. {'<'}64 Jahre: +10%)
-                </small>
+                }}>
+                  <div style={{ color: '#4ecca3', fontSize: '13px', fontWeight: '600', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <TrendingUp size={15} />
+                    Optimale Entnahme (automatisch berechnet)
+                  </div>
+                  {optimalWithdrawal !== null ? (
+                    <>
+                      <div style={{ fontSize: '26px', fontWeight: '800', color: '#4ecca3', letterSpacing: '-0.5px' }}>
+                        {formatCurrency(optimalWithdrawal / 12)}<span style={{ fontSize: '14px', fontWeight: '400', color: '#a0a0a0', marginLeft: '6px' }}>/Monat</span>
+                      </div>
+                      <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>
+                        = {formatCurrency(optimalWithdrawal)}/Jahr · Depot auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} in {params.targetYears} Jahren
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ color: '#a0a0a0', fontSize: '14px' }}>Wird berechnet…</div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <label style={{
+                    display: 'block',
+                    marginBottom: '8px',
+                    color: '#c0c0c0',
+                    fontSize: '14px',
+                    fontWeight: '500'
+                  }}>
+                    <DollarSign size={16} style={{ verticalAlign: 'middle', marginRight: '5px' }} />
+                    Basis Netto-Entnahme pro Jahr (€)
+                  </label>
+                  <input
+                    type="number"
+                    value={params.withdrawalAmount}
+                    onChange={(e) => setParams({...params, withdrawalAmount: parseFloat(e.target.value)})}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      background: 'rgba(255,255,255,0.1)',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      borderRadius: '8px',
+                      color: '#fff',
+                      fontSize: '16px'
+                    }}
+                  />
+                  {params.useAgePattern && (
+                    <small style={{ color: '#ffc107', display: 'block', marginTop: '5px', fontWeight: '500' }}>
+                      ⚠️ Wird durch Altersprofil angepasst (z.B. {'<'}64 Jahre: +10%)
+                    </small>
+                  )}
+                </>
               )}
             </div>
 
@@ -1686,39 +1847,109 @@ export default function DepotSimulator() {
           </p>
 
           {/* Existing income stream cards */}
-          {params.incomeStreams.map(stream => (
-            <div key={stream.id} style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '12px 16px',
-              background: 'rgba(78, 204, 163, 0.1)',
-              border: '1px solid rgba(78, 204, 163, 0.3)',
-              borderRadius: '10px',
-              marginBottom: '10px',
-            }}>
-              <div>
-                <span style={{ color: '#4ecca3', fontWeight: '600', marginRight: '12px' }}>{stream.label}</span>
-                <span style={{ color: '#e0e0e0' }}>{stream.monthlyAmount.toLocaleString('de-DE')} €/Monat</span>
-                <span style={{ color: '#a0a0a0', fontSize: '13px', marginLeft: '12px' }}>ab Jahr {stream.startYear}</span>
-                {stream.adjustForInflation && <span style={{ color: '#a0a0a0', fontSize: '12px', marginLeft: '8px' }}>📈 inflationsangepasst</span>}
+          {params.incomeStreams.map(stream => {
+            const type = stream.type || 'sonstige';
+            const netMonthly = calcStreamNetMonthly(stream);
+            const typeLabel = type === 'gesetzliche_rente' ? 'Gesetzl. Rente' : type === 'bav' ? 'Betr. AV' : 'Sonstiges';
+            const typeBg = type === 'gesetzliche_rente' ? 'rgba(249, 168, 37, 0.25)' : type === 'bav' ? 'rgba(100, 149, 237, 0.25)' : 'rgba(78, 204, 163, 0.2)';
+            const typeColor = type === 'gesetzliche_rente' ? '#f9a825' : type === 'bav' ? '#6495ed' : '#4ecca3';
+            const hasBrutto = type !== 'sonstige';
+            return (
+              <div key={stream.id} style={{
+                padding: '14px 16px',
+                background: 'rgba(78, 204, 163, 0.08)',
+                border: '1px solid rgba(78, 204, 163, 0.25)',
+                borderRadius: '10px',
+                marginBottom: '10px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                      <span style={{ background: typeBg, color: typeColor, fontSize: '11px', fontWeight: '700', padding: '2px 8px', borderRadius: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{typeLabel}</span>
+                      <span style={{ color: '#e0e0e0', fontWeight: '600' }}>{stream.label}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                      {hasBrutto ? (
+                        <>
+                          <span style={{ color: '#a0a0a0', fontSize: '13px' }}>
+                            Brutto: <span style={{ color: '#e0e0e0' }}>{stream.monthlyAmount.toLocaleString('de-DE')} €/Monat</span>
+                          </span>
+                          <span style={{ color: '#a0a0a0', fontSize: '13px' }}>→</span>
+                          <span style={{ color: '#4ecca3', fontSize: '14px', fontWeight: '600' }}>
+                            Netto: {Math.round(netMonthly).toLocaleString('de-DE')} €/Monat
+                          </span>
+                          {type === 'gesetzliche_rente' && (
+                            <span style={{ color: '#777', fontSize: '11px' }}>
+                              (Besteuerungsanteil {stream.besteuerungsanteil ?? 83}%, Steuersatz {stream.incomeTaxRate ?? 25}%)
+                            </span>
+                          )}
+                          {type === 'bav' && (
+                            <span style={{ color: '#777', fontSize: '11px' }}>
+                              (Steuer {stream.incomeTaxRate ?? 25}%{stream.isGKV !== false ? ' + GKV/PV' : ''})
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: '#4ecca3', fontSize: '14px', fontWeight: '600' }}>
+                          {stream.monthlyAmount.toLocaleString('de-DE')} €/Monat (netto)
+                        </span>
+                      )}
+                      <span style={{ color: '#a0a0a0', fontSize: '13px' }}>ab Jahr {stream.startYear}</span>
+                      {stream.adjustForInflation && <span style={{ color: '#a0a0a0', fontSize: '12px' }}>📈 inflationsangepasst</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setParams({...params, incomeStreams: params.incomeStreams.filter(s => s.id !== stream.id)})}
+                    style={{ background: 'none', border: 'none', color: '#eb5757', cursor: 'pointer', fontSize: '18px', padding: '4px 8px', marginLeft: '8px' }}
+                  >✕</button>
+                </div>
               </div>
-              <button
-                onClick={() => setParams({...params, incomeStreams: params.incomeStreams.filter(s => s.id !== stream.id)})}
-                style={{ background: 'none', border: 'none', color: '#eb5757', cursor: 'pointer', fontSize: '18px', padding: '4px 8px' }}
-              >✕</button>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Add income form */}
-          {showIncomeForm ? (
+          {showIncomeForm ? (() => {
+            const previewNet = calcStreamNetMonthly(incomeFormData);
+            const isBrutto = incomeFormData.type !== 'sonstige';
+            return (
             <div style={{
-              padding: '16px',
+              padding: '20px',
               background: 'rgba(255,255,255,0.05)',
               border: '1px solid rgba(255,255,255,0.15)',
               borderRadius: '10px',
               marginBottom: '10px',
             }}>
+              {/* Type selector */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '8px' }}>Art des Einkommens</label>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {[
+                    { value: 'gesetzliche_rente', label: 'Gesetzliche Rente', color: '#f9a825' },
+                    { value: 'bav', label: 'Betr. Altersversorgung', color: '#6495ed' },
+                    { value: 'sonstige', label: 'Sonstiges (Netto)', color: '#4ecca3' },
+                  ].map(opt => (
+                    <button key={opt.value}
+                      onClick={() => setIncomeFormData({
+                        ...incomeFormData,
+                        type: opt.value,
+                        label: opt.value === 'gesetzliche_rente' ? 'Gesetzliche Rente' : opt.value === 'bav' ? 'Betriebsrente' : incomeFormData.label,
+                      })}
+                      style={{
+                        padding: '7px 14px',
+                        border: `2px solid ${incomeFormData.type === opt.value ? opt.color : 'rgba(255,255,255,0.15)'}`,
+                        borderRadius: '6px',
+                        background: incomeFormData.type === opt.value ? `rgba(${opt.color === '#f9a825' ? '249,168,37' : opt.color === '#6495ed' ? '100,149,237' : '78,204,163'},0.2)` : 'rgba(255,255,255,0.05)',
+                        color: incomeFormData.type === opt.value ? opt.color : '#a0a0a0',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: incomeFormData.type === opt.value ? '700' : '400',
+                        transition: 'all 0.15s',
+                      }}
+                    >{opt.label}</button>
+                  ))}
+                </div>
+              </div>
+
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
                 <div>
                   <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Bezeichnung</label>
@@ -1727,11 +1958,12 @@ export default function DepotSimulator() {
                     value={incomeFormData.label}
                     onChange={e => setIncomeFormData({...incomeFormData, label: e.target.value})}
                     style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
-                    placeholder="z.B. Rente"
                   />
                 </div>
                 <div>
-                  <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Betrag (€/Monat)</label>
+                  <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>
+                    {isBrutto ? 'Brutto (€/Monat)' : 'Netto (€/Monat)'}
+                  </label>
                   <input
                     type="number"
                     value={incomeFormData.monthlyAmount}
@@ -1749,6 +1981,46 @@ export default function DepotSimulator() {
                     style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
                   />
                 </div>
+                <div>
+                  <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Grenzsteuersatz (%)</label>
+                  <input
+                    type="number"
+                    value={incomeFormData.incomeTaxRate ?? 25}
+                    min={0} max={50}
+                    onChange={e => setIncomeFormData({...incomeFormData, incomeTaxRate: parseFloat(e.target.value) || 0})}
+                    style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                {/* GRV-spezifisch: Besteuerungsanteil */}
+                {incomeFormData.type === 'gesetzliche_rente' && (
+                  <div>
+                    <label style={{ color: '#a0a0a0', fontSize: '13px', display: 'block', marginBottom: '4px' }}>Besteuerungsanteil (%)</label>
+                    <input
+                      type="number"
+                      value={incomeFormData.besteuerungsanteil ?? 83}
+                      min={50} max={100}
+                      onChange={e => setIncomeFormData({...incomeFormData, besteuerungsanteil: parseFloat(e.target.value) || 83})}
+                      style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '6px', color: '#fff', fontSize: '14px', boxSizing: 'border-box' }}
+                    />
+                    <small style={{ color: '#666', fontSize: '11px' }}>2026 ≈ 83–84% (steigt bis 2058 auf 100%)</small>
+                  </div>
+                )}
+
+                {/* bAV-spezifisch: GKV Toggle */}
+                {incomeFormData.type === 'bav' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '20px' }}>
+                    <input
+                      type="checkbox"
+                      id="bavGKV"
+                      checked={incomeFormData.isGKV !== false}
+                      onChange={e => setIncomeFormData({...incomeFormData, isGKV: e.target.checked})}
+                      style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                    />
+                    <label htmlFor="bavGKV" style={{ color: '#e0e0e0', fontSize: '14px', cursor: 'pointer' }}>GKV-pflichtig (≈19,6% KV+PV)</label>
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '20px' }}>
                   <input
                     type="checkbox"
@@ -1760,12 +2032,36 @@ export default function DepotSimulator() {
                   <label htmlFor="incomeInflation" style={{ color: '#e0e0e0', fontSize: '14px', cursor: 'pointer' }}>Inflationsanpassung</label>
                 </div>
               </div>
+
+              {/* Netto-Vorschau */}
+              {isBrutto && incomeFormData.monthlyAmount > 0 && (
+                <div style={{
+                  padding: '12px 16px',
+                  background: 'rgba(78, 204, 163, 0.1)',
+                  border: '1px solid rgba(78, 204, 163, 0.3)',
+                  borderRadius: '8px',
+                  marginBottom: '14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '16px',
+                  flexWrap: 'wrap',
+                }}>
+                  <span style={{ color: '#a0a0a0', fontSize: '13px' }}>Brutto: <strong style={{ color: '#e0e0e0' }}>{incomeFormData.monthlyAmount.toLocaleString('de-DE')} €</strong></span>
+                  <span style={{ color: '#a0a0a0' }}>→</span>
+                  <span style={{ color: '#4ecca3', fontSize: '15px', fontWeight: '700' }}>Netto: {Math.round(previewNet).toLocaleString('de-DE')} €/Monat</span>
+                  <span style={{ color: '#777', fontSize: '12px' }}>
+                    Abzüge: {Math.round(incomeFormData.monthlyAmount - previewNet).toLocaleString('de-DE')} €
+                    {incomeFormData.monthlyAmount > 0 ? ` (${Math.round((1 - previewNet / incomeFormData.monthlyAmount) * 100)}%)` : ''}
+                  </span>
+                </div>
+              )}
+
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button
                   onClick={() => {
                     const newStream = { ...incomeFormData, id: Date.now() };
                     setParams({...params, incomeStreams: [...params.incomeStreams, newStream]});
-                    setIncomeFormData({ label: 'Rente', startYear: 3, monthlyAmount: 1800, adjustForInflation: true });
+                    setIncomeFormData({ type: 'gesetzliche_rente', label: 'Gesetzliche Rente', startYear: 3, monthlyAmount: 2000, adjustForInflation: true, incomeTaxRate: 25, besteuerungsanteil: 83, isGKV: true });
                     setShowIncomeForm(false);
                   }}
                   style={{ padding: '8px 20px', background: '#4ecca3', border: 'none', borderRadius: '6px', color: '#1a1a2e', fontWeight: '600', cursor: 'pointer', fontSize: '14px' }}
@@ -1780,7 +2076,8 @@ export default function DepotSimulator() {
                 </button>
               </div>
             </div>
-          ) : (
+            );
+          })() : (
             <button
               onClick={() => setShowIncomeForm(true)}
               style={{
@@ -2183,8 +2480,161 @@ export default function DepotSimulator() {
             </div>
           </div>
 
+          {/* Boom Phases */}
+          <h3 style={{
+            fontSize: '22px',
+            marginTop: '40px',
+            marginBottom: '20px',
+            color: '#4ecca3',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <TrendingUp size={24} />
+            Hochphasen
+          </h3>
+
+          <div style={{
+            background: 'rgba(78, 204, 163, 0.12)',
+            border: '3px solid #4ecca3',
+            borderRadius: '12px',
+            padding: '20px',
+            marginBottom: '20px'
+          }}>
+            <div style={{ color: '#4ecca3', fontSize: '18px', fontWeight: '700', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              ℹ️ WICHTIG: Wie Hochphasen funktionieren
+            </div>
+            <div style={{ color: '#fff', fontSize: '15px', lineHeight: '1.8' }}>
+              <strong>In Hochphasen:</strong>
+              <ul style={{ marginTop: '8px', marginBottom: '0', paddingLeft: '24px' }}>
+                <li><strong style={{ color: '#4ecca3' }}>📈 Aggressives Depot:</strong> Erzielt die eingestellten überdurchschnittlichen Renditen</li>
+                <li><strong style={{ color: '#96e6a1' }}>✅ Konservatives Depot:</strong> Erzielt weiterhin seine <strong>normale Rendite</strong> von +{params.conservativeReturn}% pro Jahr</li>
+                <li><strong>💰 Entnahmen:</strong> Können optional erhöht werden (Extra-Entnahme in guten Jahren)</li>
+                <li><strong style={{ color: '#eb5757' }}>⚠️ Krise schlägt Hochphase:</strong> Falls beide gleichzeitig aktiv, gilt die Krise</li>
+              </ul>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '40px' }}>
+            {/* Boom 1 */}
+            {[
+              { n: 1, color: '#4ecca3', colorRgb: '78,204,163', emoji: '🟢' },
+              { n: 2, color: '#96e6a1', colorRgb: '150,230,161', emoji: '🌿' },
+            ].map(({ n, color, colorRgb, emoji }) => {
+              const useKey = `useBoom${n}`;
+              const startKey = `boom${n}StartYear`;
+              const yearsKey = `boom${n}Years`;
+              const returnsKey = `boom${n}Returns`;
+              const increaseKey = `boom${n}Increase`;
+              const boomReturns = params[returnsKey] || [];
+              const boomYears = params[yearsKey] || 0;
+              return (
+                <div key={n} style={{
+                  background: `rgba(${colorRgb}, 0.05)`,
+                  border: `2px solid rgba(${colorRgb}, 0.35)`,
+                  borderRadius: '12px',
+                  padding: '20px'
+                }}>
+                  <label style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    color,
+                    cursor: 'pointer',
+                    fontSize: '18px',
+                    fontWeight: '600',
+                    marginBottom: '16px'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={params[useKey]}
+                      onChange={e => setParams({ ...params, [useKey]: e.target.checked })}
+                      style={{ width: '20px', height: '20px', cursor: 'pointer' }}
+                    />
+                    {emoji} Hochphase {n}
+                  </label>
+
+                  {params[useKey] && (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                        <div>
+                          <label style={{ display: 'block', color: '#fff', marginBottom: '6px', fontSize: '12px' }}>Start Jahr</label>
+                          <input
+                            type="number" min="1" max="50"
+                            value={params[startKey]}
+                            onChange={e => setParams({ ...params, [startKey]: parseInt(e.target.value) || 1 })}
+                            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: `2px solid rgba(${colorRgb}, 0.4)`, background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '14px' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', color: '#fff', marginBottom: '6px', fontSize: '12px' }}>Jahre</label>
+                          <input
+                            type="number" min="1" max="20"
+                            value={boomYears}
+                            onChange={e => {
+                              const ny = parseInt(e.target.value) || 1;
+                              const nr = Array(ny).fill(0).map((_, i) => i < boomReturns.length ? boomReturns[i] : 15);
+                              setParams({ ...params, [yearsKey]: ny, [returnsKey]: nr });
+                            }}
+                            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: `2px solid rgba(${colorRgb}, 0.4)`, background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '14px' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', color: '#fff', marginBottom: '6px', fontSize: '12px' }}>Extra-Entnahme %</label>
+                          <input
+                            type="number" step="5" min="0" max="100"
+                            value={params[increaseKey]}
+                            onChange={e => setParams({ ...params, [increaseKey]: parseFloat(e.target.value) || 0 })}
+                            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: `2px solid rgba(${colorRgb}, 0.4)`, background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '14px' }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ padding: '12px', background: `rgba(${colorRgb}, 0.1)`, borderRadius: '8px', marginBottom: '12px' }}>
+                        <div style={{ color, fontSize: '12px', fontWeight: '600', marginBottom: '8px' }}>
+                          📈 Rendite aggressives Depot pro Jahr
+                        </div>
+                        <small style={{ color: 'rgba(255,255,255,0.6)', display: 'block', marginBottom: '8px', fontSize: '10px' }}>
+                          Konservativ: weiterhin +{params.conservativeReturn}% p.a.
+                        </small>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(60px, 1fr))', gap: '8px' }}>
+                          {Array(boomYears).fill(0).map((_, index) => (
+                            <div key={index}>
+                              <label style={{ display: 'block', color, marginBottom: '4px', fontWeight: '600', fontSize: '10px' }}>
+                                J{index + 1}
+                              </label>
+                              <input
+                                type="number" step="1" min="0" max="100"
+                                value={boomReturns[index] ?? 15}
+                                onChange={e => {
+                                  const nr = [...boomReturns];
+                                  nr[index] = parseFloat(e.target.value) || 0;
+                                  setParams({ ...params, [returnsKey]: nr });
+                                }}
+                                style={{ width: '100%', padding: '6px', borderRadius: '4px', border: `2px solid rgba(${colorRgb}, 0.4)`, background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '12px', textAlign: 'center', fontWeight: '600' }}
+                              />
+                              <small style={{ display: 'block', textAlign: 'center', color, marginTop: '2px', fontSize: '9px' }}>
+                                +{boomReturns[index] ?? 15}%
+                              </small>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <small style={{ color: 'rgba(255,255,255,0.5)', display: 'block', fontSize: '11px' }}>
+                        📅 Jahr {params[startKey]}-{params[startKey] + boomYears - 1} •
+                        Ø {boomYears > 0 ? (boomReturns.reduce((s, r) => s + (r ?? 0), 0) / boomYears).toFixed(1) : 0}% p.a.
+                        {params[increaseKey] > 0 ? ` • +${params[increaseKey]}% Entnahme` : ''}
+                      </small>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
           {/* Minimum Balance */}
-          <h3 style={{ 
+          <h3 style={{
             fontSize: '22px',
             marginTop: '40px',
             marginBottom: '20px',
@@ -2566,12 +3016,53 @@ export default function DepotSimulator() {
 
       {/* Results */}
       {showResults && summary && (
-        <div style={{ 
-          maxWidth: '1400px', 
+        <div style={{
+          maxWidth: '1400px',
           margin: '30px auto'
         }}>
+
+          {/* Ziellaufzeit-Modus: Optimale Entnahme-Karte */}
+          {params.simulationMode === 'years' && optimalWithdrawal !== null && (
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(78, 204, 163, 0.2) 0%, rgba(78, 204, 163, 0.05) 100%)',
+              border: '2px solid #4ecca3',
+              borderRadius: '16px',
+              padding: '28px 32px',
+              marginBottom: '24px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '32px',
+              flexWrap: 'wrap',
+            }}>
+              <div>
+                <div style={{ color: '#4ecca3', fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>
+                  Maximale monatliche Entnahme
+                </div>
+                <div style={{ fontSize: '42px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
+                  {formatCurrency(optimalWithdrawal / 12)}
+                  <span style={{ fontSize: '18px', fontWeight: '400', color: '#a0a0a0', marginLeft: '8px' }}>/Monat</span>
+                </div>
+                <div style={{ color: '#a0a0a0', fontSize: '13px', marginTop: '6px' }}>
+                  {formatCurrency(optimalWithdrawal)}/Jahr · Depot läuft in {params.targetYears} Jahren auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} aus
+                </div>
+              </div>
+              {params.incomeStreams.length > 0 && (
+                <div style={{ borderLeft: '1px solid rgba(78,204,163,0.3)', paddingLeft: '32px' }}>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginBottom: '4px' }}>Davon aus Depot (Ø)</div>
+                  <div style={{ fontSize: '22px', fontWeight: '700', color: '#e0e0e0' }}>
+                    {formatCurrency((optimalWithdrawal - params.incomeStreams.reduce((s, st) => s + calcStreamNetMonthly(st) * 12, 0)) / 12)}
+                    <span style={{ fontSize: '13px', color: '#a0a0a0', marginLeft: '4px' }}>/Monat</span>
+                  </div>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '2px' }}>
+                    + {formatCurrency(params.incomeStreams.reduce((s, st) => s + calcStreamNetMonthly(st) * 12, 0) / 12)}/Monat aus Zusatzeinkommen
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Summary Cards */}
-          <div style={{ 
+          <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
             gap: '20px',
@@ -3725,20 +4216,22 @@ export default function DepotSimulator() {
                   }
                   
                   return (
-                    <tr key={index} style={{ 
+                    <tr key={index} style={{
                       borderBottom: '1px solid rgba(255,255,255,0.1)',
-                      background: row.isInCrisis 
-                        ? 'rgba(235, 87, 87, 0.25)' 
-                        : (index % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent'),
-                      borderLeft: row.isInCrisis ? '4px solid #eb5757' : 'none'
+                      background: row.isInCrisis
+                        ? 'rgba(235, 87, 87, 0.25)'
+                        : row.isInBoom
+                          ? 'rgba(78, 204, 163, 0.12)'
+                          : (index % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent'),
+                      borderLeft: row.isInCrisis ? '4px solid #eb5757' : row.isInBoom ? '4px solid #4ecca3' : 'none'
                     }}>
-                      <td style={{ padding: '10px', color: '#e0e0e0', fontWeight: row.isInCrisis ? '600' : 'normal' }}>
+                      <td style={{ padding: '10px', color: '#e0e0e0', fontWeight: (row.isInCrisis || row.isInBoom) ? '600' : 'normal' }}>
                         {row.year}
                       </td>
                       <td style={{ padding: '10px', color: '#e0e0e0' }}>{row.age}</td>
                       <td style={{ padding: '10px', textAlign: 'center' }}>
                         {row.isInCrisis ? (
-                          <span style={{ 
+                          <span style={{
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '4px',
@@ -3751,6 +4244,21 @@ export default function DepotSimulator() {
                           }}>
                             <AlertCircle size={12} />
                             KRISE
+                          </span>
+                        ) : row.isInBoom ? (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            background: '#4ecca3',
+                            color: '#1a1a2e',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: '700'
+                          }}>
+                            <TrendingUp size={12} />
+                            BOOM
                           </span>
                         ) : row.rebalanceAmount > 0 ? (
                           <span style={{ 
@@ -3820,31 +4328,43 @@ export default function DepotSimulator() {
                           {row.conservativeReturn?.toFixed(1)}%
                         </small>
                       </td>
-                      <td style={{ 
-                        padding: '10px', 
-                        textAlign: 'right', 
-                        color: row.aggressiveGain >= 0 ? '#96e6a1' : '#eb5757', 
+                      <td style={{
+                        padding: '10px',
+                        textAlign: 'right',
+                        color: row.aggressiveGain >= 0 ? '#96e6a1' : '#eb5757',
                         fontSize: '12px',
-                        background: row.isInCrisis && row.aggressiveGain < 0 ? 'rgba(235, 87, 87, 0.1)' : 'transparent'
+                        background: row.isInCrisis && row.aggressiveGain < 0
+                          ? 'rgba(235, 87, 87, 0.1)'
+                          : row.isInBoom
+                            ? 'rgba(78, 204, 163, 0.08)'
+                            : 'transparent'
                       }}>
                         {formatCurrency(row.aggressiveGain)}
                         {row.isInCrisis && row.aggressiveGain < 0 && (
                           <span style={{ color: '#eb5757', marginLeft: '4px', fontSize: '10px' }} title="Krisenverlust!">⚠️</span>
                         )}
-                        <small style={{ display: 'block', fontSize: '9px', color: row.isInCrisis && row.aggressiveGain < 0 ? '#eb5757' : '#999', marginTop: '2px' }}>
+                        {row.isInBoom && (
+                          <span style={{ color: '#4ecca3', marginLeft: '4px', fontSize: '10px' }} title="Hochphase!">📈</span>
+                        )}
+                        <small style={{ display: 'block', fontSize: '9px', color: row.isInCrisis && row.aggressiveGain < 0 ? '#eb5757' : row.isInBoom ? '#4ecca3' : '#999', marginTop: '2px' }}>
                           {row.aggressiveReturn?.toFixed(1)}%
                         </small>
                       </td>
-                      <td style={{ 
-                        padding: '10px', 
-                        textAlign: 'right', 
-                        color: row.isInCrisis ? '#eb5757' : '#e0e0e0',
-                        fontWeight: row.isInCrisis ? '700' : 'normal'
+                      <td style={{
+                        padding: '10px',
+                        textAlign: 'right',
+                        color: row.isInCrisis ? '#eb5757' : row.isInBoom ? '#4ecca3' : '#e0e0e0',
+                        fontWeight: (row.isInCrisis || row.isInBoom) ? '700' : 'normal'
                       }}>
                         {formatCurrency(row.withdrawalNominal)}
-                        {params.useAgePattern && ageFactor !== 1.0 && !row.isInCrisis && (
+                        {params.useAgePattern && ageFactor !== 1.0 && !row.isInCrisis && !row.isInBoom && (
                           <small style={{ display: 'block', color: '#999', fontSize: '10px' }}>
                             (Basis × {(ageFactor * 100).toFixed(0)}%)
+                          </small>
+                        )}
+                        {row.isInBoom && row.withdrawalNominal > row.withdrawalPlanned && (
+                          <small style={{ display: 'block', color: '#4ecca3', fontSize: '10px', fontWeight: '600' }}>
+                            ↑ von {formatCurrency(row.withdrawalPlanned)}
                           </small>
                         )}
                         {row.isInCrisis && row.withdrawalPlanned && (
