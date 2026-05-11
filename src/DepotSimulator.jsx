@@ -1684,11 +1684,19 @@ export default function DepotSimulator() {
                   </div>
                   {optimalWithdrawal !== null ? (
                     <>
-                      <div style={{ fontSize: '26px', fontWeight: '800', color: '#4ecca3', letterSpacing: '-0.5px' }}>
-                        {formatCurrency(optimalWithdrawal / 12)}<span style={{ fontSize: '14px', fontWeight: '400', color: '#a0a0a0', marginLeft: '6px' }}>/Monat</span>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                        <div>
+                          <span style={{ fontSize: '26px', fontWeight: '800', color: '#4ecca3', letterSpacing: '-0.5px' }}>{formatCurrency(optimalWithdrawal / 12)}</span>
+                          <span style={{ fontSize: '13px', fontWeight: '400', color: '#a0a0a0', marginLeft: '4px' }}>/Monat</span>
+                        </div>
+                        <span style={{ color: 'rgba(78,204,163,0.35)', fontSize: '18px' }}>|</span>
+                        <div>
+                          <span style={{ fontSize: '18px', fontWeight: '700', color: '#96e6a1' }}>{formatCurrency(optimalWithdrawal)}</span>
+                          <span style={{ fontSize: '13px', fontWeight: '400', color: '#a0a0a0', marginLeft: '4px' }}>/Jahr</span>
+                        </div>
                       </div>
-                      <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>
-                        = {formatCurrency(optimalWithdrawal)}/Jahr · Depot auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} in {params.targetYears} Jahren
+                      <div style={{ color: '#a0a0a0', fontSize: '11px', marginTop: '2px' }}>
+                        Depot auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} in {params.targetYears} Jahren
                       </div>
                     </>
                   ) : (
@@ -1920,12 +1928,19 @@ export default function DepotSimulator() {
                 <div style={{ color: '#4ecca3', fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>
                   {params.usePKV ? 'Lebenshaltung (ohne PKV)' : 'Maximale monatliche Entnahme'}
                 </div>
-                <div style={{ fontSize: '32px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
-                  {formatCurrency(optimalWithdrawal / 12)}
-                  <span style={{ fontSize: '14px', fontWeight: '400', color: '#a0a0a0', marginLeft: '6px' }}>/Monat</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '16px', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '32px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>{formatCurrency(optimalWithdrawal / 12)}</div>
+                    <div style={{ color: '#a0a0a0', fontSize: '13px', marginTop: '3px' }}>/Monat</div>
+                  </div>
+                  <div style={{ color: 'rgba(78,204,163,0.35)', fontSize: '24px', fontWeight: '200' }}>|</div>
+                  <div>
+                    <div style={{ fontSize: '22px', fontWeight: '800', color: '#96e6a1', letterSpacing: '-0.5px', lineHeight: 1 }}>{formatCurrency(optimalWithdrawal)}</div>
+                    <div style={{ color: '#a0a0a0', fontSize: '13px', marginTop: '3px' }}>/Jahr</div>
+                  </div>
                 </div>
-                <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '4px' }}>
-                  {formatCurrency(optimalWithdrawal)}/Jahr · Alter {params.startAge} → {params.endAge}
+                <div style={{ color: '#666', fontSize: '12px', marginTop: '6px' }}>
+                  Alter {params.startAge} → {params.endAge}
                 </div>
               </div>
               {params.usePKV && params.pkvMonthlyAmount > 0 && (
@@ -3229,15 +3244,26 @@ export default function DepotSimulator() {
               flexWrap: 'wrap',
             }}>
               <div>
-                <div style={{ color: '#4ecca3', fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>
-                  {params.usePKV ? 'Lebenshaltung (ohne PKV)' : 'Maximale monatliche Entnahme'}
+                <div style={{ color: '#4ecca3', fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '10px' }}>
+                  {params.usePKV ? 'Lebenshaltung (ohne PKV)' : 'Maximale Entnahme'}
                 </div>
-                <div style={{ fontSize: '42px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
-                  {formatCurrency(optimalWithdrawal / 12)}
-                  <span style={{ fontSize: '18px', fontWeight: '400', color: '#a0a0a0', marginLeft: '8px' }}>/Monat</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '24px', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '42px', fontWeight: '900', color: '#4ecca3', letterSpacing: '-1px', lineHeight: 1 }}>
+                      {formatCurrency(optimalWithdrawal / 12)}
+                    </div>
+                    <div style={{ color: '#a0a0a0', fontSize: '14px', marginTop: '4px', fontWeight: '500' }}>/Monat</div>
+                  </div>
+                  <div style={{ color: 'rgba(78,204,163,0.4)', fontSize: '28px', fontWeight: '200' }}>|</div>
+                  <div>
+                    <div style={{ fontSize: '28px', fontWeight: '700', color: '#96e6a1', letterSpacing: '-0.5px', lineHeight: 1 }}>
+                      {formatCurrency(optimalWithdrawal)}
+                    </div>
+                    <div style={{ color: '#a0a0a0', fontSize: '14px', marginTop: '4px', fontWeight: '500' }}>/Jahr</div>
+                  </div>
                 </div>
-                <div style={{ color: '#a0a0a0', fontSize: '13px', marginTop: '6px' }}>
-                  {formatCurrency(optimalWithdrawal)}/Jahr · Depot läuft in {derivedTargetYears} Jahren auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} aus
+                <div style={{ color: '#666', fontSize: '12px', marginTop: '8px' }}>
+                  Depot auf {formatCurrency(params.useMinimumBalance ? params.minimumBalance : 0)} in {derivedTargetYears} Jahren
                 </div>
               </div>
 
@@ -3265,25 +3291,33 @@ export default function DepotSimulator() {
                       </div>
                     </div>
                   </div>
-                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '8px' }}>
-                    Netto verfügbar (Jahr 1): <strong style={{ color: '#e0e0e0' }}>{formatCurrency(optimalWithdrawal / 12 - params.pkvMonthlyAmount)}/Monat</strong>
+                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px' }}>
+                    Netto verfügbar (Jahr 1):
+                    <strong style={{ color: '#e0e0e0', display: 'block', fontSize: '14px', marginTop: '2px' }}>
+                      {formatCurrency(optimalWithdrawal / 12 - params.pkvMonthlyAmount)}/Monat
+                      <span style={{ color: '#a0a0a0', fontWeight: '400' }}> · </span>
+                      {formatCurrency((optimalWithdrawal / 12 - params.pkvMonthlyAmount) * 12)}/Jahr
+                    </strong>
                   </div>
                 </div>
               )}
 
               {/* Zusatzeinkommen-Spalte */}
-              {params.incomeStreams.length > 0 && (
-                <div style={{ borderLeft: '1px solid rgba(78,204,163,0.3)', paddingLeft: '32px' }}>
-                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginBottom: '4px' }}>Davon aus Depot (Ø)</div>
-                  <div style={{ fontSize: '22px', fontWeight: '700', color: '#e0e0e0' }}>
-                    {formatCurrency((optimalWithdrawal - params.incomeStreams.reduce((s, st) => s + calcStreamNetMonthly(st) * 12, 0)) / 12)}
-                    <span style={{ fontSize: '13px', color: '#a0a0a0', marginLeft: '4px' }}>/Monat</span>
+              {params.incomeStreams.length > 0 && (() => {
+                const incomeAnnual = params.incomeStreams.reduce((s, st) => s + calcStreamNetMonthly(st) * 12, 0);
+                const depotAnnual = optimalWithdrawal - incomeAnnual;
+                return (
+                  <div style={{ borderLeft: '1px solid rgba(78,204,163,0.3)', paddingLeft: '32px' }}>
+                    <div style={{ color: '#a0a0a0', fontSize: '12px', marginBottom: '8px' }}>Davon aus Depot</div>
+                    <div style={{ fontSize: '20px', fontWeight: '700', color: '#e0e0e0' }}>{formatCurrency(depotAnnual / 12)}<span style={{ fontSize: '12px', color: '#a0a0a0', marginLeft: '4px' }}>/Monat</span></div>
+                    <div style={{ fontSize: '15px', fontWeight: '600', color: '#c0c0c0', marginTop: '2px' }}>{formatCurrency(depotAnnual)}<span style={{ fontSize: '12px', color: '#a0a0a0', marginLeft: '4px' }}>/Jahr</span></div>
+                    <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px' }}>
+                      Zusatzeinkommen: {formatCurrency(incomeAnnual / 12)}/Monat
+                      <span style={{ display: 'block' }}>{formatCurrency(incomeAnnual)}/Jahr</span>
+                    </div>
                   </div>
-                  <div style={{ color: '#a0a0a0', fontSize: '12px', marginTop: '2px' }}>
-                    + {formatCurrency(params.incomeStreams.reduce((s, st) => s + calcStreamNetMonthly(st) * 12, 0) / 12)}/Monat aus Zusatzeinkommen
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           )}
 
@@ -3431,6 +3465,46 @@ export default function DepotSimulator() {
               <p style={{ margin: '5px 0 0 0', fontSize: '14px', color: '#999' }}>
                 Bis Alter {summary.finalAge}
               </p>
+            </div>
+
+            {/* Entnahme-Karte: Monat + Jahr */}
+            <div style={{
+              background: 'rgba(78, 204, 163, 0.1)',
+              border: '1px solid rgba(78, 204, 163, 0.3)',
+              borderRadius: '16px',
+              padding: '24px',
+              backdropFilter: 'blur(10px)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                <DollarSign size={24} color="#4ecca3" />
+                <h3 style={{ margin: 0, fontSize: '16px', color: '#c0c0c0' }}>
+                  {derivedSimMode === 'years' ? 'Entnahme (berechnet)' : 'Basis-Entnahme'}
+                </h3>
+              </div>
+              {(() => {
+                const annual = derivedSimMode === 'years' && optimalWithdrawal
+                  ? optimalWithdrawal
+                  : effectiveParams.withdrawalAmount;
+                const monthly = annual / 12;
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '26px', fontWeight: '800', color: '#4ecca3' }}>{formatCurrency(monthly)}</span>
+                      <span style={{ fontSize: '13px', color: '#999' }}>/Monat</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                      <span style={{ fontSize: '18px', fontWeight: '700', color: '#96e6a1' }}>{formatCurrency(annual)}</span>
+                      <span style={{ fontSize: '13px', color: '#999' }}>/Jahr</span>
+                    </div>
+                    {params.usePKV && params.pkvMonthlyAmount > 0 && (
+                      <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '12px', color: '#a0a0a0' }}>
+                        <div>PKV: − {formatCurrency(params.pkvMonthlyAmount)}/Monat</div>
+                        <div>Netto: {formatCurrency(monthly - params.pkvMonthlyAmount)}/Monat · {formatCurrency((monthly - params.pkvMonthlyAmount) * 12)}/Jahr</div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             <div style={{
